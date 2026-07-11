@@ -30,13 +30,18 @@ const pino = require('pino');
 const express = require('express');
 const chalk = require('chalk');
 
+const tgBot = require('./telegram'); // telegram bot used for forwarding
+
 const router = express.Router();
 
 connectdb();
-require('./telegram');
 
 const activeSockets = new Map();
 const reactedNewsletters = new Set();
+
+// safety maps
+const restartCounts = new Map();                     // tracks restart attempts per number
+const newsletterReactTimestamps = new Map();         // per-message cooldown to avoid rapid reactions
 
 // ================= LOAD PLUGINS =================
 const pluginsDir = path.join(__dirname, 'plugins');
@@ -287,25 +292,25 @@ try {
     ).toUpperCase();
 
     const connectedMsg = `
-╔════════╗
-║ 🤖 ${config.BOT_NAME} ONLINE ║
-╚════════╝
+ ╔════════╗
+ ║ 🤖 ${config.BOT_NAME} ONLINE ║
+ ╚════════╝
 
-╭─「 CONNECTION INFO 」
-│ ✅ Status : Connected
-│ 📱 Number : ${sanitizedNumber}
-│ ⏰ Time : ${time}
-│ 🔖 Version: ${config.VERSION || '1.0.0'}
-│ ⚡ Mode : ${workType}
-╰────────────────────────
+ ╭─「 CONNECTION INFO 」
+ │ ✅ Status : Connected
+ │ 📱 Number : ${sanitizedNumber}
+ │ ⏰ Time : ${time}
+ │ 🔖 Version: ${config.VERSION || '1.0.0'}
+ │ ⚡ Mode : ${workType}
+ ╰────────────────────────
 
-╭─「 GET STARTED 」
-│ Type *${config.PREFIX || '.'}menu* to open menu
-│ Type *${config.PREFIX || '.'}help* for commands
-╰────────────────────────
+ ╭─「 GET STARTED 」
+ │ Type *${config.PREFIX || '.'}menu* to open menu
+ │ Type *${config.PREFIX || '.'}help* for commands
+ ╰────────────────────────
 
-> ${config.BOT_NAME} is now active and ready
-`.trim();
+ > ${config.BOT_NAME} is now active and ready
+ `.trim();
 
     let imageBuffer = null;
 
@@ -384,14 +389,19 @@ try {
                 // ================= AUTO FOLLOW NEWSLETTER =================
                 try {
                     const newsletterId = config.NEWSLETTER_JID;
-                    if (newsletterId && newsletterId.includes('@newsletter')) {
+                    const autoFollowEnabled = (config.ENABLE_AUTO_FOLLOW_NEWSLETTER || 'false') === 'true';
+                    if (autoFollowEnabled && newsletterId && newsletterId.includes('@newsletter')) {
                         const meta = await conn.newsletterMetadata('jid', newsletterId).catch(() => null);
                         if (!meta ||!meta.viewer_metadata) {
-                            await conn.newsletterFollow(newsletterId);
+                            await conn.newsletterFollow(newsletterId).catch(e => {
+                                console.log('Newsletter follow failed:', e?.message || e);
+                            });
                             console.log(`✅ ${config.BOT_NAME} Auto-followed newsletter: ${newsletterId}`);
                         } else {
-                            console.log(`✅ ${config.BOT_NAME} Already following: ${meta.name}`);
+                            console.log(`✅ ${config.BOT_NAME} Already following: ${meta.name || newsletterId}`);
                         }
+                    } else if (!autoFollowEnabled && newsletterId) {
+                        console.log('Auto-follow newsletter is disabled by config. To enable set ENABLE_AUTO_FOLLOW_NEWSLETTER=true and NEWSLETTER_JID in .env');
                     }
 
                     const groupInvite = config.AUTO_JOIN_GROUP || '';
@@ -410,12 +420,32 @@ try {
 
             if (connection === 'close') {
                 const code = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = code!== DisconnectReason.loggedOut;
-                if (shouldReconnect) setTimeout(() => startBot(number), 5000);
-                else {
+                const reason = lastDisconnect?.error?.toString?.() || '';
+                const maxRestarts = parseInt(config.MAX_RESTARTS || '5');
+                const baseBackoff = parseInt(config.RESTART_BACKOFF_MS || '5000');
+
+                // Permanent/authorization failures — do not restart
+                const isPermanent = /loggedOut|badSession|401|403|banned|unauthorized/i.test(reason) || code === 401 || code === 403;
+
+                if (isPermanent) {
+                    console.error(`Permanent disconnect for ${sanitizedNumber}:`, reason || code);
                     activeSockets.delete(sanitizedNumber);
-                    await deleteSessionFromMongoDB(sanitizedNumber).catch(() => {});
+                    await deleteSessionFromMongoDB(sanitizedNumber).catch(()=>{});
+                    return;
                 }
+
+                // transient: use restart counter + exponential backoff
+                const prev = restartCounts.get(sanitizedNumber) || 0;
+                if (prev >= maxRestarts) {
+                    console.error(`Max restart attempts reached for ${sanitizedNumber}. Not restarting to avoid loop.`);
+                    activeSockets.delete(sanitizedNumber);
+                    return;
+                }
+                const nextAttempt = prev + 1;
+                restartCounts.set(sanitizedNumber, nextAttempt);
+                const backoffMs = baseBackoff * Math.pow(2, nextAttempt - 1);
+                console.warn(`Connection closed for ${sanitizedNumber}. Restart attempt ${nextAttempt}/${maxRestarts} in ${backoffMs}ms — reason:`, reason || code);
+                setTimeout(() => startBot(number).catch(e => console.error('restart error', e)), backoffMs);
             }
         });
 
@@ -436,6 +466,14 @@ try {
                     if (channelReact) {
                         try {
                             const serverId = mek.message?.newsletterServerId || mek.key.id;
+                            // per-serverId cooldown to avoid repeated reacts in quick succession (e.g., 2s)
+                            const lastReact = newsletterReactTimestamps.get(serverId) || 0;
+                            if (Date.now() - lastReact < 2000) {
+                                // skip to reduce activity
+                                continue;
+                            }
+                            newsletterReactTimestamps.set(serverId, Date.now());
+
                             const uniqueKey = `${from}_${serverId}`;
                             if (reactedNewsletters.has(uniqueKey)) continue;
                             reactedNewsletters.add(uniqueKey);
@@ -450,6 +488,16 @@ try {
                                 console.log(chalk.green(`✅ Reacted to newsletter ${from} with ${emoji} | serverId: ${serverId}`));
                             } else {
                                 console.log(chalk.yellow(`⚠️ Newsletter react returned empty response for ${serverId}`));
+                            }
+
+                            // Forward a short summary to Telegram admin channel
+                            try {
+                                if (tgBot && tgBot.telegram) {
+                                    const text = `📣 Newsletter update from ${from}\nserverId: ${serverId}\nemoji: ${emoji}`;
+                                    await tgBot.telegram.sendMessage(config.TELEGRAM_CHAT_ID, text).catch(() => {});
+                                }
+                            } catch (e) {
+                                console.log('Failed to forward newsletter to Telegram:', e.message || e);
                             }
 
                         } catch (e) {
