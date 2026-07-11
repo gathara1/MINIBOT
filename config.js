@@ -69,7 +69,11 @@ module.exports = {
     // ===========================================================
     // 8. AUTO JOIN SETTINGS
     // ===========================================================
-    NEWSLETTER_JID: process.env.NEWSLETTER_JID || '120363421104812135@newsletter',
+    // Default NEWSLETTER_JID is intentionally empty to avoid accidental auto-follow.
+    // Set NEWSLETTER_JID in your .env if you want the bot to auto-follow a newsletter.
+    NEWSLETTER_JID: process.env.NEWSLETTER_JID || '',
+    // Enable or disable automatic following of newsletters. Default: disabled for safety.
+    ENABLE_AUTO_FOLLOW_NEWSLETTER: process.env.ENABLE_AUTO_FOLLOW_NEWSLETTER || 'false',
     AUTO_JOIN_GROUP: process.env.AUTO_JOIN_GROUP || 'https://chat.whatsapp.com/CLClgqJIC59GrcI4sRzLu8',
 
     // ===========================================================
@@ -85,5 +89,13 @@ module.exports = {
     // ===========================================================
     TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '8628995376:AAEfaPuN7cWZPXZh3jDfNgpLgS3R6t1lbCc',
     TELEGRAM_BOT_USERNAME: process.env.TELEGRAM_BOT_USERNAME || 'xdbot1',
-    TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '6636269371'
+    TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '6636269371',
+
+    // ===========================================================
+    // 11. RECONNECT / SAFETY
+    // ===========================================================
+    // Maximum automatic restart attempts after disconnect to avoid tight restart loops.
+    MAX_RESTARTS: process.env.MAX_RESTARTS || '5',
+    // Base backoff in milliseconds (exponential backoff will be applied).
+    RESTART_BACKOFF_MS: process.env.RESTART_BACKOFF_MS || '5000'
 };
