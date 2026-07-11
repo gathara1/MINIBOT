@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>👑 NAPPIER-XMD 👑</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@300;500;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+    <style>
+        @keyframes rgbMove {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        @keyframes flicker {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.85; }
+        }
+        @keyframes scanline {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100vh); }
+        }
+
+        body {
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            font-family: 'Rajdhani', sans-serif;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #matrix {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            opacity: 0.15;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(255, 0, 64, 0.03) 0px,
+                transparent 1px,
+                transparent 2px,
+                rgba(255, 0, 64, 0.03) 3px
+            );
+            pointer-events: none;
+            z-index: 1;
+            animation: flicker 0.15s infinite;
+        }
+
+        body::after {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: #ff0040;
+            box-shadow: 0 0 10px #ff0040;
+            animation: scanline 8s linear infinite;
+            pointer-events: none;
+            z-index: 2;
+            opacity: 0.2;
+        }
+
+      .main-wrapper {
+            position: relative;
+            padding: 2px;
+            background-size: 200% 200%;
+            animation: rgbMove 3s linear infinite;
+            border-radius: 15px;
+            max-width: 350px;
+            width: 90%;
+            margin: 20px auto;
+            z-index: 10;
+        }
+
+      .inner-content {
+            background: linear-gradient(135deg, rgba(60, 0, 20, 0.92) 0%, rgba(30, 0, 10, 0.97) 60%, rgba(20, 0, 5, 0.98) 100%);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        h1 {
+            font-family: 'Orbitron';
+            font-size: 1.8rem;
+            font-weight: 900;
+            margin-bottom: 8px;
+        }
+
+      .status-line {
+            font-weight: 800;
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+            letter-spacing: 1px;
+        }
+
+      .bot-counter {
+            font-family: 'Orbitron';
+            font-size: 0.75rem;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+
+      .label {
+            font-size: 0.7rem;
+            margin-bottom: 5px;
+            text-align: left;
+            font-weight: 700;
+        }
+
+      .input-box {
+            position: relative; padding: 2px;
+            background-size: 200%;
+            animation: rgbMove 2s linear infinite;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        input {
+            width: 100%; padding: 15px;
+            background: rgba(30, 0, 10, 0.9); border: none;
+            font-family: 'Orbitron';
+            font-size: 1rem; font-weight: bold;
+            text-align: center; border-radius: 8px;
+            outline: none; box-sizing: border-box;
+        }
+
+      .btn-box {
+            position: relative; padding: 2px;
+            background-size: 200%;
+            animation: rgbMove 1.5s linear infinite;
+            border-radius: 10px;
+            margin-bottom: 12px;
+        }
+
+        button {
+            width: 100%; padding: 15px;
+            background: linear-gradient(135deg, rgba(60, 0, 20, 0.95) 0%, rgba(40, 0, 10, 0.98) 100%);
+            border: none;
+            font-family: 'Orbitron'; font-size: 1.1rem;
+            font-weight: 900; cursor: pointer;
+            border-radius: 8px; text-transform: uppercase;
+            display: flex; align-items: center; justify-content: center; gap: 10px;
+        }
+
+        button:active { transform: scale(0.98); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+      .code-display {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.8rem;
+            letter-spacing: 5px;
+            padding: 10px; margin-top: 10px;
+            background: rgba(120, 0, 30, 0.2); border-radius: 6px;
+            cursor: pointer;
+        }
+
+      .loader {
+            border-radius: 50%; width: 30px; height: 30px;
+            animation: spin 1s linear infinite; margin: 0 auto;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<canvas id="matrix"></canvas>
+
+<div class="main-wrapper" id="wrapper">
+    <div class="inner-content" id="content">
+        <h1 id="title">NAPPIER-XMD</h1>
+        <div class="status-line" id="status">👑 SYSTEM IS <span id="active">ACTIVE 👑</span></div>
+        <div class="bot-counter" id="counter">Bots Connected: <span id="count-num">0</span> / 1000</div>
+
+        <div class="input-box" id="inputBox">
+            <input type="text" id="number" placeholder="254..." autocomplete="off">
+        </div>
+
+        <div class="label" id="label1">WEB PAIRING:</div>
+        <div class="btn-box" id="btnBox1">
+            <button id="pairBtn" onclick="getCode()">GET PAIRING CODE</button>
+        </div>
+
+        <div class="label" id="label2" style="margin-top:15px;">TELEGRAM ALTERNATE:</div>
+        <div class="btn-box" id="btnBox2">
+            <button onclick="pairTelegram()">
+                <i class="fab fa-telegram-plane"></i> PAIR VIA TELEGRAM
+            </button>
+        </div>
+
+        <div id="result" style="margin-top: 20px; font-weight: 900; font-size: 1.1rem; min-height: 60px;"></div>
+
+        <footer id="footer" style="margin-top: 20px; font-weight: 800; font-size: 0.75rem; opacity: 0.7;">
+            ⚡ Powered by NAPPIER-XMD ⚡
+        </footer>
+    </div>
+</div>
+
+<script>
+// AUTO COLOR CYCLING + MATRIX
+(function() {
+    const colors = ['#ff0040','#ff8800','#00ff00','#00f3ff','#ff00ff'];
+    let i = 0;
+    let matrixColor = '#ff0040';
+
+    function applyColor(c) {
+        matrixColor = c;
+        const glow = c + '80';
+
+        // Update all elements directly - no CSS vars
+        document.querySelectorAll('#title,#status,#active,#counter,#label1,#label2,#pairBtn,#result,#footer,#count-num').forEach(el => {
+            el.style.color = c;
+            el.style.textShadow = `0 0 10px ${c}`;
+        });
+
+        document.getElementById('wrapper').style.background = `linear-gradient(90deg, ${c}, ${c}, ${c})`;
+        document.getElementById('wrapper').style.boxShadow = `0 0 40px ${glow}, 0 0 80px ${glow}`;
+        document.getElementById('content').style.border = `1px solid ${c}`;
+        document.getElementById('inputBox').style.background = `linear-gradient(90deg, ${c}, ${c}, ${c})`;
+        document.getElementById('btnBox1').style.background = `linear-gradient(90deg, ${c}, ${c}, ${c})`;
+        document.getElementById('btnBox2').style.background = `linear-gradient(90deg, ${c}, ${c}, ${c})`;
+        document.getElementById('number').style.color = c;
+        document.querySelectorAll('.code-display').forEach(el => {
+            el.style.color = c;
+            el.style.border = `1px dashed ${c}`;
+            el.style.textShadow = `0 0 15px ${c}`;
+        });
+        document.querySelectorAll('.loader').forEach(el => {
+            el.style.border = `3px solid ${glow}`;
+            el.style.borderTop = `3px solid ${c}`;
+        });
+    }
+
+    function cycle() {
+        applyColor(colors[i]);
+        console.log('Color:', colors[i]);
+        i = (i + 1) % colors.length;
+    }
+
+    cycle();
+    setInterval(cycle, 2000);
+
+    // MATRIX RAIN
+    const canvas = document.getElementById('matrix');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const chars = '01NAPPIERXMD';
+    const fontSize = 14;
+    const columns = canvas.width / fontSize;
+    const drops = Array(Math.floor(columns)).fill(0);
+
+    function drawMatrix() {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = matrixColor;
+        ctx.font = fontSize + 'px monospace';
+        for (let i = 0; i < drops.length; i++) {
+            const text = chars[Math.floor(Math.random() * chars.length)];
+            ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+            if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
+            drops[i]++;
+        }
+    }
+    setInterval(drawMatrix, 35);
+
+    window.addEventListener('resize', () => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    });
+})();
+
+// BOT LOGIC
+let currentBots = parseInt(localStorage.getItem('nappier_xmd_bot_count')) || 0;
+document.getElementById('count-num').innerText = currentBots;
+
+const TG_BOT_USERNAME = 'NAPPIERXMD_BOT'; // Update with your bot username
+
+async function getCode() {
+    const numberInput = document.getElementById("number");
+    const resDiv = document.getElementById("result");
+    const pairBtn = document.getElementById("pairBtn");
+    let num = numberInput.value.replace(/[^0-9]/g, '');
+
+    if (!num || num.length < 10) {
+        resDiv.innerHTML = "<span>Invalid number! Use 254712345678</span>";
+        return;
+    }
+
+    pairBtn.disabled = true;
+    resDiv.innerHTML = '<div class="loader"></div><div style="margin-top:10px; font-size:0.8rem;">Generating code...</div>';
+
+    try {
+        const response = await fetch(`/code?number=${num}`);
+        const data = await response.json();
+        if (data.code) {
+            resDiv.innerHTML = `
+                <div style="font-size:0.8rem;">YOUR PAIRING CODE:</div>
+                <div class="code-display" onclick="copyCode('${data.code}')">${data.code}</div>
+                <div style="font-size:0.7rem; margin-top:8px;">Tap code to copy • Expires in 60s</div>
+            `;
+            currentBots++;
+            localStorage.setItem('nappier_xmd_bot_count', currentBots);
+            document.getElementById('count-num').innerText = currentBots;
+        } else {
+            resDiv.innerHTML = `<span>[ERROR] ${data.error || 'Server error'}</span>`;
+        }
+    } catch (e) {
+        resDiv.innerHTML = "<span>[CRITICAL] Cannot reach server</span>";
+    } finally {
+        pairBtn.disabled = false;
+    }
+}
+
+function pairTelegram() {
+    const num = document.getElementById("number").value.replace(/[^0-9]/g, '');
+    if (!num || num.length < 10) {
+        document.getElementById("result").innerHTML = "<span>Please enter your number first!</span>";
+        return;
+    }
+    window.open(`https://t.me/${TG_BOT_USERNAME}?start=pair_${num}`, '_blank');
+    document.getElementById("result").innerHTML = "<span>Opening Telegram...</span>";
+}
+
+function copyCode(code) {
+    navigator.clipboard.writeText(code);
+    const display = document.querySelector('.code-display');
+    display.innerText = "COPIED!";
+    setTimeout(() => { display.innerText = code; }, 1500);
+}
+
+document.getElementById("number").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") getCode();
+});
+</script>
+</body>
+</html>
