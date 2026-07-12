@@ -37,6 +37,7 @@ const router = express.Router();
 connectdb();
 
 const activeSockets = new Map();
+const pairingAttempts = new Map(); // Track pairing attempts
 
 // safety maps
 const restartCounts = new Map();                     // tracks restart attempts per number
@@ -174,15 +175,20 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
 }
 
 // ================= WAIT FOR CONNECTION =================
-async function waitForConnection(conn, maxWaitTime = 5000) {
+async function waitForConnection(conn, maxWaitTime = 10000) {
     return new Promise((resolve, reject) => {
+        let isResolved = false;
         const timeout = setTimeout(() => {
-            reject(new Error('Connection timeout - took longer than ' + maxWaitTime + 'ms'));
+            if (!isResolved) {
+                isResolved = true;
+                reject(new Error('Connection timeout after ' + maxWaitTime + 'ms'));
+            }
         }, maxWaitTime);
 
         const connectionHandler = (update) => {
             const { connection } = update;
-            if (connection === 'open') {
+            if (connection === 'open' && !isResolved) {
+                isResolved = true;
                 clearTimeout(timeout);
                 conn.ev.off('connection.update', connectionHandler);
                 resolve(true);
@@ -211,7 +217,8 @@ async function startBot(number, res = null, forceNew = false) {
                 } catch {}
                 activeSockets.delete(sanitizedNumber);
             }
-            await delay(1000);
+            restartCounts.delete(sanitizedNumber); // Reset restart counter for fresh pairing
+            await delay(500);
         }
 
         const existingSession = await getSessionFromMongoDB(sanitizedNumber);
@@ -235,26 +242,33 @@ async function startBot(number, res = null, forceNew = false) {
             defaultQueryTimeoutMs: 0,
             keepAliveIntervalMs: 10000,
             emitOwnEvents: true,
-            fireInitQueries: true,
-            generateHighQualityLinkPreview: true,
-            syncFullHistory: true,
+            fireInitQueries: false,
+            generateHighQualityLinkPreview: false,
+            syncFullHistory: false,
             markOnlineOnConnect: true,
             browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
-            syncFullHistory: false,
-            maxMsgsInMemory: 200,
+            maxMsgsInMemory: 100,
             shouldContinueOnConnectionErrors: true,
-            retryRequestDelayMs: 10000,
+            retryRequestDelayMs: 5000,
+            getMessage: async (key) => { return { conversation: '' }; },
+            fetchImageSize: false,
+            useShortUrl: true
         });
 
         activeSockets.set(sanitizedNumber, conn);
 
         if ((!existingSession || forceNew) && res) {
             console.log(`🔐 Starting NEW pairing process for ${sanitizedNumber}`);
+            pairingAttempts.set(sanitizedNumber, (pairingAttempts.get(sanitizedNumber) || 0) + 1);
+            
             try {
                 // WAIT for connection BEFORE requesting pairing code
-                console.log(`⏳ Waiting for connection to establish...`);
-                await waitForConnection(conn, 8000);
-                console.log(`✅ Connection established, requesting pairing code...`);
+                console.log(`⏳ Waiting for WhatsApp connection...`);
+                await waitForConnection(conn, 10000);
+                console.log(`✅ Connection ready, requesting pairing code...`);
+                
+                // Add small delay to ensure connection is fully initialized
+                await delay(1000);
                 
                 const code = await conn.requestPairingCode(sanitizedNumber);
                 console.log(`✅ PAIRING CODE for ${sanitizedNumber}: ${code}`);
@@ -273,7 +287,8 @@ async function startBot(number, res = null, forceNew = false) {
                 });
                 // Clean up on pairing failure
                 try {
-                    conn.ws.close();
+                    conn.ws?.close?.();
+                    conn.end?.();
                 } catch {}
                 activeSockets.delete(sanitizedNumber);
                 throw e;
@@ -351,7 +366,8 @@ async function startBot(number, res = null, forceNew = false) {
                         const img = await axios.get(
                             "https://files.catbox.moe/99ofzd.jpg",
                             {
-                                responseType: "arraybuffer"
+                                responseType: "arraybuffer",
+                                timeout: 5000
                             }
                         );
 
@@ -423,16 +439,17 @@ async function startBot(number, res = null, forceNew = false) {
             if (connection === 'close') {
                 const code = lastDisconnect?.error?.output?.statusCode;
                 const reason = lastDisconnect?.error?.toString?.() || '';
-                const maxRestarts = parseInt(config.MAX_RESTARTS || '5');
+                const maxRestarts = parseInt(config.MAX_RESTARTS || '3'); // Reduced from 5 to 3
                 const baseBackoff = parseInt(config.RESTART_BACKOFF_MS || '5000');
 
                 // Permanent/authorization failures — do not restart
-                const isPermanent = /loggedOut|badSession|401|403|banned|unauthorized/i.test(reason) || code === 401 || code === 403;
+                const isPermanent = /loggedOut|badSession|401|403|banned|unauthorized|invalidSession/i.test(reason) || code === 401 || code === 403;
 
                 if (isPermanent) {
                     console.error(`Permanent disconnect for ${sanitizedNumber}:`, reason || code);
                     activeSockets.delete(sanitizedNumber);
                     await deleteSessionFromMongoDB(sanitizedNumber).catch(()=>{});
+                    restartCounts.delete(sanitizedNumber);
                     return;
                 }
 
@@ -441,6 +458,7 @@ async function startBot(number, res = null, forceNew = false) {
                 if (prev >= maxRestarts) {
                     console.error(`Max restart attempts reached for ${sanitizedNumber}. Not restarting to avoid loop.`);
                     activeSockets.delete(sanitizedNumber);
+                    restartCounts.delete(sanitizedNumber);
                     return;
                 }
                 const nextAttempt = prev + 1;
@@ -493,7 +511,7 @@ async function startBot(number, res = null, forceNew = false) {
                                     await conn.sendMessage(from, { react: { key: resolvedKey, text: emoji } }, { statusJidList: [realJid, conn.user.id.split(':')[0] + '@s.whatsapp.net'] });
                                 }
                             }
-                        }
+                         }
                     } catch (e) {}
                     continue;
                 }
@@ -511,24 +529,15 @@ async function startBot(number, res = null, forceNew = false) {
         });
 
     } catch (err) {
-        console.error('❌ Error in startBot:', err);
-        if (res &&!res.headersSent) res.json({ error: 'Bot start failed: ' + err.message });
+        console.error('❌ Error in startBot:', err.message);
+        if (res &&!res.headersSent) res.status(500).json({ error: 'Bot start failed: ' + err.message });
     }
 }
 
-// ================= AUTO-RECONNECT =================
-(async () => {
-    await connectdb();
-    try {
-        const numbers = await getAllNumbersFromMongoDB();
-        for (const num of numbers) {
-            await startBot(num);
-            await delay(2000);
-        }
-    } catch (e) {
-        console.error('Auto-reconnect error:', e);
-    }
-})();
+// ================= AUTO-RECONNECT DISABLED - START FRESH =================
+// Auto-reconnect on startup is DISABLED to prevent cascading failures
+// Users must manually request pairing codes via the web/Telegram interface
+console.log('ℹ️ Auto-reconnect on startup is disabled. Only process new pairing requests.');
 
 // ================= API ROUTES ONLY =================
 router.get('/code', async (req, res) => {
@@ -539,7 +548,11 @@ router.get('/code', async (req, res) => {
 
 router.get('/status', (req, res) => {
     const sessions = [...activeSockets.keys()];
-    res.json({ active: sessions.length, sessions });
+    res.json({ 
+        active: sessions.length, 
+        sessions,
+        pairing_attempts: Object.fromEntries(pairingAttempts)
+    });
 });
 
 module.exports.getActiveSockets = () => activeSockets;
