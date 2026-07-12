@@ -24,8 +24,9 @@ const {
     deleteSessionFromMongoDB
 } = require('./lib/database');
 
-// ================= MEGA INTEGRATION =================
-const { Storage } = require('megajs');
+// ================= MEGA STORAGE =================
+const megaStorage = require('./lib/megaStorage');
+
 const path = require('path');
 const fs = require('fs-extra');
 const pino = require('pino');
@@ -44,409 +45,6 @@ const pairingCodes = new Map();
 
 // safety maps
 const restartCounts = new Map();
-
-// ================= MEGA CONFIGURATION =================
-const MEGA_CONFIG = {
-    email: process.env.MEGA_EMAIL || '',
-    password: process.env.MEGA_PASSWORD || '',
-    folder: process.env.MEGA_FOLDER || 'pairing_codes'
-};
-
-let megaStorage = null;
-
-// Initialize MEGA storage
-async function initMEGA() {
-    if (!MEGA_CONFIG.email || !MEGA_CONFIG.password) {
-        console.log('⚠️ MEGA credentials not configured. Using local storage only.');
-        return null;
-    }
-
-    try {
-        megaStorage = new Storage({
-            email: MEGA_CONFIG.email,
-            password: MEGA_CONFIG.password
-        }, (err) => {
-            if (err) {
-                console.error('❌ MEGA connection error:', err.message);
-                megaStorage = null;
-            }
-        });
-
-        // Wait for connection
-        await new Promise((resolve, reject) => {
-            megaStorage.on('ready', () => {
-                console.log('✅ MEGA storage connected successfully');
-                resolve();
-            });
-            megaStorage.on('error', (err) => {
-                reject(err);
-            });
-        });
-
-        // Ensure the folder exists
-        await ensureMEGAFolder();
-        
-        return megaStorage;
-    } catch (err) {
-        console.error('❌ MEGA initialization failed:', err.message);
-        return null;
-    }
-}
-
-// Ensure MEGA folder exists
-async function ensureMEGAFolder() {
-    if (!megaStorage) return;
-
-    try {
-        // Check if folder exists
-        let folder = megaStorage.root.children.find(c => 
-            c.name === MEGA_CONFIG.folder && c.directory
-        );
-
-        if (!folder) {
-            // Create folder
-            folder = await megaStorage.mkdir(MEGA_CONFIG.folder);
-            console.log(`📁 Created MEGA folder: ${MEGA_CONFIG.folder}`);
-        }
-
-        return folder;
-    } catch (err) {
-        console.error('❌ Failed to create MEGA folder:', err.message);
-    }
-}
-
-// ================= MEGA PAIR CODE FUNCTIONS =================
-
-// Save pairing code to MEGA
-async function savePairingCodeToMEGA(number, code) {
-    try {
-        if (!megaStorage) {
-            // Fallback to local file
-            await savePairingCodeLocal(number, code);
-            return false;
-        }
-
-        const folder = await ensureMEGAFolder();
-        if (!folder) {
-            await savePairingCodeLocal(number, code);
-            return false;
-        }
-
-        const fileName = `${number}.json`;
-        const data = {
-            number: number,
-            code: code,
-            timestamp: new Date().toISOString(),
-            expires: Date.now() + 2 * 60 * 1000 // 2 minutes
-        };
-
-        // Check if file exists
-        let file = folder.children.find(c => c.name === fileName);
-        
-        if (file) {
-            // Update existing file
-            await file.upload(JSON.stringify(data, null, 2));
-            console.log(`🔄 Updated pair code for ${number} in MEGA`);
-        } else {
-            // Create new file
-            await folder.upload(fileName, JSON.stringify(data, null, 2));
-            console.log(`💾 Saved pair code for ${number} to MEGA`);
-        }
-
-        // Also save locally as backup
-        await savePairingCodeLocal(number, code);
-
-        return true;
-    } catch (err) {
-        console.error('❌ MEGA save error:', err.message);
-        // Fallback to local
-        await savePairingCodeLocal(number, code);
-        return false;
-    }
-}
-
-// Get pairing code from MEGA
-async function getPairingCodeFromMEGA(number) {
-    try {
-        // Try MEGA first
-        if (megaStorage) {
-            const folder = await ensureMEGAFolder();
-            if (folder) {
-                const fileName = `${number}.json`;
-                const file = folder.children.find(c => c.name === fileName);
-                
-                if (file) {
-                    // Download file data
-                    const data = await new Promise((resolve, reject) => {
-                        file.loadAttributes((err) => {
-                            if (err) reject(err);
-                            else {
-                                const buffer = [];
-                                file.download()
-                                    .on('data', (chunk) => buffer.push(chunk))
-                                    .on('end', () => {
-                                        try {
-                                            const content = JSON.parse(Buffer.concat(buffer).toString());
-                                            resolve(content);
-                                        } catch (e) {
-                                            reject(e);
-                                        }
-                                    })
-                                    .on('error', reject);
-                            }
-                        });
-                    });
-
-                    // Check if code is still valid
-                    if (data.expires && Date.now() < data.expires) {
-                        return data.code;
-                    } else {
-                        // Delete expired code
-                        await deletePairingCodeFromMEGA(number);
-                        return null;
-                    }
-                }
-            }
-        }
-
-        // Fallback to local
-        return await getPairingCodeLocal(number);
-    } catch (err) {
-        console.error('❌ MEGA get error:', err.message);
-        return await getPairingCodeLocal(number);
-    }
-}
-
-// Delete pairing code from MEGA
-async function deletePairingCodeFromMEGA(number) {
-    try {
-        if (megaStorage) {
-            const folder = await ensureMEGAFolder();
-            if (folder) {
-                const fileName = `${number}.json`;
-                const file = folder.children.find(c => c.name === fileName);
-                
-                if (file) {
-                    await file.delete();
-                    console.log(`🗑️ Deleted pair code for ${number} from MEGA`);
-                }
-            }
-        }
-
-        // Delete local backup
-        await deletePairingCodeLocal(number);
-        return true;
-    } catch (err) {
-        console.error('❌ MEGA delete error:', err.message);
-        return false;
-    }
-}
-
-// ================= LOCAL FALLBACK FUNCTIONS =================
-
-async function savePairingCodeLocal(number, code) {
-    try {
-        const dir = path.join(__dirname, 'pairing_codes');
-        await fs.ensureDir(dir);
-        const filePath = path.join(dir, `${number}.json`);
-        await fs.writeJson(filePath, {
-            number,
-            code,
-            timestamp: new Date().toISOString(),
-            expires: Date.now() + 2 * 60 * 1000
-        });
-    } catch (err) {
-        console.error('❌ Local save error:', err.message);
-    }
-}
-
-async function getPairingCodeLocal(number) {
-    try {
-        const filePath = path.join(__dirname, 'pairing_codes', `${number}.json`);
-        if (await fs.pathExists(filePath)) {
-            const data = await fs.readJson(filePath);
-            if (data.expires && Date.now() < data.expires) {
-                return data.code;
-            } else {
-                await deletePairingCodeLocal(number);
-            }
-        }
-        return null;
-    } catch (err) {
-        return null;
-    }
-}
-
-async function deletePairingCodeLocal(number) {
-    try {
-        const filePath = path.join(__dirname, 'pairing_codes', `${number}.json`);
-        if (await fs.pathExists(filePath)) {
-            await fs.remove(filePath);
-        }
-    } catch (err) {}
-}
-
-// ================= REAL BAILEYS PAIRING WITH MEGA =================
-
-async function requestRealPairingCode(number, res) {
-    const sanitizedNumber = number.replace(/[^0-9]/g, '');
-    const sessionDir = path.join(__dirname, 'session', `session_${sanitizedNumber}`);
-
-    // Check if already pairing
-    if (pairingInProgress.has(sanitizedNumber)) {
-        return res.status(429).json({ 
-            error: 'Pairing already in progress', 
-            status: 'busy',
-            message: 'Wait 2 minutes before trying again'
-        });
-    }
-
-    pairingInProgress.set(sanitizedNumber, true);
-
-    try {
-        console.log(`🔐 REAL PAIRING: Starting for ${sanitizedNumber}`);
-
-        // Check if we already have a valid code in MEGA
-        const existingCode = await getPairingCodeFromMEGA(sanitizedNumber);
-        if (existingCode) {
-            console.log(`♻️ Using existing code from MEGA for ${sanitizedNumber}`);
-            return res.json({
-                success: true,
-                code: existingCode,
-                status: 'existing',
-                message: 'Using existing pairing code from MEGA storage',
-                expires: '2 minutes from creation',
-                method: 'MEGA',
-                number: sanitizedNumber
-            });
-        }
-
-        // Clear old session
-        await deleteSessionFromMongoDB(sanitizedNumber).catch(() => {});
-        if (fs.existsSync(sessionDir)) fs.removeSync(sessionDir);
-
-        // Create the auth state
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-        
-        // Create the socket
-        const conn = makeWASocket({
-            auth: state,
-            printQRInTerminal: false,
-            logger: pino({ level: 'silent' }),
-            browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
-            connectTimeoutMs: 60000,
-            keepAliveIntervalMs: 25000,
-            syncFullHistory: false,
-            markOnlineOnConnect: false,
-            version: [2, 3000, 1033105955],
-            getMessage: async () => undefined
-        });
-
-        // Store socket for cleanup
-        activeSockets.set(sanitizedNumber, conn);
-
-        // ===== IMMEDIATELY REQUEST THE PAIRING CODE =====
-        console.log(`📨 Requesting pairing code for ${sanitizedNumber}...`);
-        
-        // Request the pairing code - this is the REAL WhatsApp pairing code
-        const pairingCode = await conn.requestPairingCode(sanitizedNumber);
-        
-        console.log(`✅ REAL PAIRING CODE for ${sanitizedNumber}: ${pairingCode}`);
-        
-        // ===== SAVE TO MEGA =====
-        await savePairingCodeToMEGA(sanitizedNumber, pairingCode);
-        
-        // Also store in memory
-        pairingCodes.set(sanitizedNumber, {
-            code: pairingCode,
-            timestamp: Date.now(),
-            expires: Date.now() + 2 * 60 * 1000
-        });
-
-        // Send the code back immediately
-        res.json({
-            success: true,
-            code: pairingCode,
-            status: 'new_pairing',
-            message: 'Enter this code in WhatsApp > Linked Devices > Link with phone number',
-            expires: '2 minutes',
-            method: 'MEGA + Baileys',
-            storage: 'MEGA.nz',
-            number: sanitizedNumber
-        });
-
-        // Keep connection alive and wait for user to enter code
-        console.log(`⏳ Waiting for user to enter pairing code for ${sanitizedNumber}...`);
-
-        // Monitor connection status
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-
-            if (connection === 'open') {
-                console.log(`✅ Device linked successfully for ${sanitizedNumber}!`);
-                
-                // Save credentials
-                await saveCreds();
-                try {
-                    const creds = JSON.parse(fs.readFileSync(path.join(sessionDir, 'creds.json'), 'utf-8'));
-                    await saveSessionToMongoDB(sanitizedNumber, creds);
-                } catch (_) {}
-                
-                // Clean up
-                await deletePairingCodeFromMEGA(sanitizedNumber);
-                pairingInProgress.delete(sanitizedNumber);
-                pairingCodes.delete(sanitizedNumber);
-                
-                // Start the bot with this session
-                await startBot(sanitizedNumber);
-            }
-
-            if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                
-                if (statusCode === 428) {
-                    console.log(`⚠️ Pairing rejected for ${sanitizedNumber}: Status 428 - Rate limited or invalid`);
-                    // Keep the code in MEGA for retry
-                } else if (statusCode === 401) {
-                    console.log(`❌ Unauthorized for ${sanitizedNumber}: Invalid session`);
-                    await deletePairingCodeFromMEGA(sanitizedNumber);
-                } else {
-                    console.log(`📡 Connection closed for ${sanitizedNumber}: ${statusCode || 'unknown'}`);
-                }
-                
-                // Clean up
-                activeSockets.delete(sanitizedNumber);
-                pairingInProgress.delete(sanitizedNumber);
-            }
-        });
-
-        // Auto-close after 2 minutes if not linked
-        setTimeout(async () => {
-            if (activeSockets.has(sanitizedNumber)) {
-                console.log(`⏰ Closing socket for ${sanitizedNumber} after pairing timeout`);
-                const sock = activeSockets.get(sanitizedNumber);
-                sock.end();
-                activeSockets.delete(sanitizedNumber);
-                pairingInProgress.delete(sanitizedNumber);
-                // Code remains in MEGA for 2 minutes
-            }
-        }, 120000);
-
-    } catch (err) {
-        console.error(`❌ Real pairing error for ${sanitizedNumber}:`, err.message);
-        pairingInProgress.delete(sanitizedNumber);
-        activeSockets.delete(sanitizedNumber);
-        
-        if (!res.headersSent) {
-            res.status(500).json({ 
-                success: false,
-                error: 'Failed to get pairing code',
-                status: 'error',
-                message: err.message
-            });
-        }
-    }
-}
 
 // ================= LOAD PLUGINS =================
 const pluginsDir = path.join(__dirname, 'plugins');
@@ -562,6 +160,168 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
     }
 }
 
+// ================= REAL BAILEYS PAIRING WITH MEGA =================
+async function requestRealPairingCode(number, res) {
+    const sanitizedNumber = number.replace(/[^0-9]/g, '');
+    const sessionDir = path.join(__dirname, 'session', `session_${sanitizedNumber}`);
+
+    // Check if already pairing
+    if (pairingInProgress.has(sanitizedNumber)) {
+        return res.status(429).json({ 
+            error: 'Pairing already in progress', 
+            status: 'busy',
+            message: 'Wait 2 minutes before trying again'
+        });
+    }
+
+    pairingInProgress.set(sanitizedNumber, true);
+
+    try {
+        console.log(`🔐 REAL PAIRING: Starting for ${sanitizedNumber}`);
+
+        // Check if we already have a valid code in MEGA
+        const existingCode = await megaStorage.getPairCode(sanitizedNumber);
+        if (existingCode) {
+            console.log(`♻️ Using existing code from MEGA for ${sanitizedNumber}`);
+            pairingInProgress.delete(sanitizedNumber);
+            return res.json({
+                success: true,
+                code: existingCode,
+                status: 'existing',
+                message: 'Using existing pairing code from MEGA storage',
+                expires: '2 minutes from creation',
+                method: 'MEGA + Baileys',
+                number: sanitizedNumber
+            });
+        }
+
+        // Clear old session
+        await deleteSessionFromMongoDB(sanitizedNumber).catch(() => {});
+        if (fs.existsSync(sessionDir)) fs.removeSync(sessionDir);
+
+        // Create the auth state
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        
+        // Create the socket
+        const conn = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: 'silent' }),
+            browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
+            connectTimeoutMs: 60000,
+            keepAliveIntervalMs: 25000,
+            syncFullHistory: false,
+            markOnlineOnConnect: false,
+            version: [2, 3000, 1033105955],
+            getMessage: async () => undefined
+        });
+
+        // Store socket for cleanup
+        activeSockets.set(sanitizedNumber, conn);
+
+        // ===== IMMEDIATELY REQUEST THE PAIRING CODE =====
+        console.log(`📨 Requesting pairing code for ${sanitizedNumber}...`);
+        
+        // Request the pairing code - this is the REAL WhatsApp pairing code
+        const pairingCode = await conn.requestPairingCode(sanitizedNumber);
+        
+        console.log(`✅ REAL PAIRING CODE for ${sanitizedNumber}: ${pairingCode}`);
+        
+        // ===== SAVE TO MEGA =====
+        await megaStorage.savePairCode(sanitizedNumber, pairingCode);
+        
+        // Also store in memory
+        pairingCodes.set(sanitizedNumber, {
+            code: pairingCode,
+            timestamp: Date.now(),
+            expires: Date.now() + 2 * 60 * 1000
+        });
+
+        // Send the code back immediately
+        res.json({
+            success: true,
+            code: pairingCode,
+            status: 'new_pairing',
+            message: 'Enter this code in WhatsApp > Linked Devices > Link with phone number',
+            expires: '2 minutes',
+            method: 'MEGA + Baileys',
+            storage: 'MEGA.nz',
+            number: sanitizedNumber
+        });
+
+        // Keep connection alive and wait for user to enter code
+        console.log(`⏳ Waiting for user to enter pairing code for ${sanitizedNumber}...`);
+
+        // Monitor connection status
+        conn.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+
+            if (connection === 'open') {
+                console.log(`✅ Device linked successfully for ${sanitizedNumber}!`);
+                
+                // Save credentials
+                await saveCreds();
+                try {
+                    const creds = JSON.parse(fs.readFileSync(path.join(sessionDir, 'creds.json'), 'utf-8'));
+                    await saveSessionToMongoDB(sanitizedNumber, creds);
+                } catch (_) {}
+                
+                // Clean up MEGA code
+                await megaStorage.deletePairCode(sanitizedNumber);
+                pairingInProgress.delete(sanitizedNumber);
+                pairingCodes.delete(sanitizedNumber);
+                
+                // Start the bot with this session
+                await startBot(sanitizedNumber);
+            }
+
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                
+                if (statusCode === 428) {
+                    console.log(`⚠️ Pairing rejected for ${sanitizedNumber}: Status 428 - Rate limited or invalid`);
+                    // Keep the code in MEGA for retry
+                } else if (statusCode === 401) {
+                    console.log(`❌ Unauthorized for ${sanitizedNumber}: Invalid session`);
+                    await megaStorage.deletePairCode(sanitizedNumber);
+                } else {
+                    console.log(`📡 Connection closed for ${sanitizedNumber}: ${statusCode || 'unknown'}`);
+                }
+                
+                // Clean up
+                activeSockets.delete(sanitizedNumber);
+                pairingInProgress.delete(sanitizedNumber);
+            }
+        });
+
+        // Auto-close after 2 minutes if not linked
+        setTimeout(async () => {
+            if (activeSockets.has(sanitizedNumber)) {
+                console.log(`⏰ Closing socket for ${sanitizedNumber} after pairing timeout`);
+                const sock = activeSockets.get(sanitizedNumber);
+                sock.end();
+                activeSockets.delete(sanitizedNumber);
+                pairingInProgress.delete(sanitizedNumber);
+                // Code remains in MEGA for 2 minutes
+            }
+        }, 120000);
+
+    } catch (err) {
+        console.error(`❌ Real pairing error for ${sanitizedNumber}:`, err.message);
+        pairingInProgress.delete(sanitizedNumber);
+        activeSockets.delete(sanitizedNumber);
+        
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                success: false,
+                error: 'Failed to get pairing code',
+                status: 'error',
+                message: err.message
+            });
+        }
+    }
+}
+
 // ================= START BOT =================
 async function startBot(number, res = null, forceNew = false) {
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
@@ -635,7 +395,6 @@ async function startBot(number, res = null, forceNew = false) {
                 console.log(chalk.green(`✅ Connected: ${sanitizedNumber}`));
                 await addNumberToMongoDB(sanitizedNumber);
 
-                // Rest of your connected message code...
                 try {
                     await delay(3000);
                     if (!conn.user?.id) {
@@ -755,7 +514,34 @@ async function startBot(number, res = null, forceNew = false) {
                 const from = mek.key.remoteJid;
 
                 if (from === 'status@broadcast') {
-                    // Status handling code...
+                    try {
+                        const shouldRead = config.AUTO_READ_STATUS === 'true';
+                        const shouldReact = config.AUTO_REACT_STATUS === 'true';
+                        const statusParticipant = mek.key.participant || mek.key.remoteJid;
+
+                        if (statusParticipant && statusParticipant !== 'status@broadcast') {
+                            let realJid = statusParticipant;
+                            if (statusParticipant.endsWith('@lid')) {
+                                const rawPn = mek.key?.participantPn || mek.key?.senderPn || mek.participantPn;
+                                if (rawPn) realJid = rawPn.includes('@') ? rawPn : `${rawPn}@s.whatsapp.net`;
+                                else {
+                                    const resolved = await conn.getJidFromLid(statusParticipant).catch(() => null);
+                                    if (resolved) realJid = resolved;
+                                }
+                            }
+                            const resolvedKey = { remoteJid: 'status@broadcast', id: mek.key.id, participant: realJid };
+                            if (shouldRead) await conn.readMessages([resolvedKey]);
+                            if (shouldReact) {
+                                const mType = Object.keys(mek.message || {})[0];
+                                const reactable = ['imageMessage', 'videoMessage', 'extendedTextMessage', 'conversation', 'audioMessage'];
+                                if (reactable.includes(mType)) {
+                                    let emojis = ['🧩', '🌸', '💫', '🫀', '🧿', '🤖', '🥰', '🗿', '💙', '🌝', '🖤', '💚'];
+                                    const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+                                    await conn.sendMessage(from, { react: { key: resolvedKey, text: emoji } }, { statusJidList: [realJid, conn.user.id.split(':')[0] + '@s.whatsapp.net'] });
+                                }
+                            }
+                        }
+                    } catch (e) {}
                     continue;
                 }
 
@@ -787,6 +573,15 @@ setInterval(() => {
     });
 }, 60000);
 
+// Run MEGA cleanup every hour
+setInterval(async () => {
+    try {
+        await megaStorage.cleanupExpiredCodes();
+    } catch (e) {
+        // Silent fail
+    }
+}, 60 * 60 * 1000);
+
 // ================= API ROUTES =================
 router.get('/code', async (req, res) => {
     const number = req.query.number;
@@ -813,13 +608,11 @@ router.get('/status', (req, res) => {
         active: sessions.length, 
         sessions,
         pairing_in_progress: [...pairingInProgress.keys()],
-        mega_connected: !!megaStorage
+        mega_connected: megaStorage ? true : false
     });
 });
 
-// ================= INITIALIZE MEGA ON STARTUP =================
-initMEGA().catch(() => {});
-
+// ================= STARTUP =================
 console.log('ℹ️ Auto-reconnect on startup is disabled. Only process new pairing requests.');
 
 module.exports.getActiveSockets = () => activeSockets;
