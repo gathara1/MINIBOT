@@ -11,7 +11,6 @@ const { commands } = require('./inconnuboy');
 const { sms } = require('./lib/msg');
 const { saveMessage } = require('./data');
 const { AntiDelete } = require('./lib/antidel');
-const megaStorage = require('./lib/mega-storage');
 const {
     connectdb,
     saveSessionToMongoDB,
@@ -38,7 +37,8 @@ const router = express.Router();
 connectdb();
 
 const activeSockets = new Map();
-const pairingAttempts = new Map(); // Track pairing attempts
+const pairingInProgress = new Map(); // Track active pairing sessions
+const pairingCodes = new Map(); // Store actual pairing codes
 
 // safety maps
 const restartCounts = new Map();                     // tracks restart attempts per number
@@ -108,13 +108,6 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
         const autoRecord = (userConfig.AUTO_RECORDING || config.AUTO_RECORDING || 'false') === 'true';
         const autoTyping = (userConfig.AUTO_TYPING || config.AUTO_TYPING || 'false') === 'true';
 
-        // ⚠️ DISABLED: Auto typing/recording can trigger detection
-        // if (autoRecord &&!fromMe) {
-        //     await conn.sendPresenceUpdate('recording', from).catch(() => {});
-        // } else if (autoTyping &&!fromMe) {
-        //     await conn.sendPresenceUpdate('composing', from).catch(() => {});
-        // }
-
         const workType = (userConfig.WORK_TYPE || config.WORK_TYPE || 'public').toLowerCase();
         if (workType === 'private' &&!isOwner &&!sudoAccess) return;
         if (workType === 'inbox' && isGroup) return;
@@ -142,21 +135,10 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
         await incrementStats(botNumber, 'commandsUsed').catch(() => {});
 
         const reply = async (text) => {
-            // ⚠️ DISABLED: Auto typing/recording can trigger detection
-            // if (autoRecord &&!fromMe) {
-            //     await conn.sendPresenceUpdate('recording', from).catch(() => {});
-            //     await delay(1000);
-            // } else if (autoTyping &&!fromMe) {
-            //     await conn.sendPresenceUpdate('composing', from).catch(() => {});
-            //     await delay(1000);
-            // }
-
             const sent = await conn.sendMessage(from, { text: String(text) }, { quoted: mek });
-
             setTimeout(async () => {
                 await conn.sendPresenceUpdate('paused', from).catch(() => {});
             }, 2000);
-
             return sent;
         };
 
@@ -175,27 +157,143 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
     }
 }
 
-// ================= MEGA CODE GENERATION (FAST PATH) =================
-async function generatePairingCodeMEGA(number) {
+// ================= REAL BAILEYS PAIRING WITH PROPER TIMEOUT =================
+async function requestRealPairingCode(number, res) {
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
+    const sessionDir = path.join(__dirname, 'session', `session_${sanitizedNumber}`);
+
+    // Check if already pairing
+    if (pairingInProgress.has(sanitizedNumber)) {
+        return res.status(429).json({ 
+            error: 'Pairing already in progress', 
+            status: 'busy',
+            message: 'Wait 2 minutes before trying again'
+        });
+    }
+
+    pairingInProgress.set(sanitizedNumber, true);
+
     try {
-        console.log(`📱 Generating pairing code via MEGA method for ${sanitizedNumber}...`);
+        console.log(`🔐 REAL PAIRING: Starting for ${sanitizedNumber}`);
+
+        // Clear old session
+        await deleteSessionFromMongoDB(sanitizedNumber).catch(() => {});
+        if (fs.existsSync(sessionDir)) fs.removeSync(sessionDir);
+
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        const logger = pino({ level: 'silent' });
+
+        let codeRetrieved = false;
+        let pairingCode = null;
+
+        const conn = makeWASocket({
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, logger),
+            },
+            printQRInTerminal: false,
+            logger: pino({ level: 'silent' }),
+            version: [2, 3000, 1033105955],
+            connectTimeoutMs: 90000,  // 90 seconds for Heroku
+            defaultQueryTimeoutMs: 0,
+            keepAliveIntervalMs: 25000,
+            emitOwnEvents: true,
+            fireInitQueries: false,
+            generateHighQualityLinkPreview: false,
+            syncFullHistory: false,
+            markOnlineOnConnect: false,
+            browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
+            maxMsgsInMemory: 50,
+            shouldContinueOnConnectionErrors: true,
+            retryRequestDelayMs: 2000,
+            getMessage: async (key) => { return { conversation: '' }; },
+            fetchImageSize: false,
+            useShortUrl: true
+        });
+
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                if (!codeRetrieved) {
+                    conn.end();
+                    pairingInProgress.delete(sanitizedNumber);
+                    reject(new Error('Pairing timeout - WhatsApp not responding'));
+                }
+            }, 75000); // 75 second timeout
+
+            conn.ev.on('connection.update', async (update) => {
+                const { connection } = update;
+                console.log(`📡 Connection update: ${connection} for ${sanitizedNumber}`);
+
+                if (connection === 'connecting') {
+                    console.log(`🔄 Connecting to WhatsApp for ${sanitizedNumber}...`);
+                }
+
+                if (connection === 'open') {
+                    console.log(`✅ Connected to WhatsApp for ${sanitizedNumber}`);
+                    if (!codeRetrieved) {
+                        codeRetrieved = true;
+                        try {
+                            const code = await conn.requestPairingCode(sanitizedNumber);
+                            pairingCode = code;
+                            console.log(`✅ REAL PAIRING CODE for ${sanitizedNumber}: ${code}`);
+                            
+                            pairingCodes.set(sanitizedNumber, {
+                                code,
+                                timestamp: Date.now(),
+                                expires: Date.now() + 2 * 60 * 1000 // 2 minutes
+                            });
+
+                            clearTimeout(timeout);
+                            
+                            res.json({
+                                code,
+                                status: 'new_pairing',
+                                message: 'Enter this code in WhatsApp > Linked Devices > Link with phone number',
+                                expires: '2 minutes',
+                                method: 'REAL'
+                            });
+
+                            // Keep connection alive for linking
+                            setTimeout(() => {
+                                conn.end();
+                                activeSockets.delete(sanitizedNumber);
+                                pairingInProgress.delete(sanitizedNumber);
+                            }, 120000); // Disconnect after 2 minutes
+                        } catch (e) {
+                            clearTimeout(timeout);
+                            conn.end();
+                            pairingInProgress.delete(sanitizedNumber);
+                            reject(e);
+                        }
+                    }
+                }
+
+                if (connection === 'close') {
+                    clearTimeout(timeout);
+                    conn.end();
+                    pairingInProgress.delete(sanitizedNumber);
+                }
+            });
+
+            conn.ev.on('creds.update', async () => {
+                await saveCreds();
+            });
+        });
+    } catch (err) {
+        console.error(`❌ Real pairing error for ${sanitizedNumber}:`, err.message);
+        pairingInProgress.delete(sanitizedNumber);
         
-        // Generate code instantly
-        const code = megaStorage.generateCode();
-        
-        // Store code
-        await megaStorage.storeCode(sanitizedNumber, code);
-        
-        console.log(`✅ MEGA CODE GENERATED for ${sanitizedNumber}: ${code}`);
-        return code;
-    } catch (e) {
-        console.error(`❌ MEGA code generation error: ${e.message}`);
-        throw e;
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                error: 'Failed to get pairing code',
+                status: 'error',
+                message: err.message
+            });
+        }
     }
 }
 
-// ================= START BOT =================
+// ================= START BOT (REGULAR CONNECTION) =================
 async function startBot(number, res = null, forceNew = false) {
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
     const sessionDir = path.join(__dirname, 'session', `session_${sanitizedNumber}`);
@@ -226,42 +324,6 @@ async function startBot(number, res = null, forceNew = false) {
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const logger = pino({ level: process.env.NODE_ENV === 'production'? 'fatal' : 'debug' });
 
-        // ================= NEW PAIRING REQUEST - USE MEGA METHOD =================
-        if ((!existingSession || forceNew) && res) {
-            console.log(`🔐 Starting NEW pairing process for ${sanitizedNumber}`);
-            pairingAttempts.set(sanitizedNumber, (pairingAttempts.get(sanitizedNumber) || 0) + 1);
-            
-            try {
-                // ✅ INSTANT CODE GENERATION - No Baileys connection needed!
-                const code = await generatePairingCodeMEGA(sanitizedNumber);
-                
-                if (!res.headersSent) res.json({
-                    code,
-                    status: 'new_pairing',
-                    message: 'Enter this code in WhatsApp > Linked Devices > Link with phone number',
-                    expires: '2 minutes',
-                    method: 'MEGA'
-                });
-                
-                // Now try to connect Baileys in background (optional, for actual linking)
-                setTimeout(() => {
-                    startBotInBackground(sanitizedNumber, sessionDir, state, saveCreds, logger)
-                        .catch(e => console.error(`Background connection error: ${e.message}`));
-                }, 1000);
-                
-                return; // Exit early - pairing code sent successfully!
-            } catch (e) {
-                console.error('❌ MEGA pairing error:', e.message);
-                if (!res.headersSent) res.status(500).json({
-                    error: 'Failed to generate pairing code',
-                    status: 'error',
-                    message: e.message
-                });
-                return;
-            }
-        }
-
-        // ================= REGULAR BAILEYS CONNECTION =================
         const conn = makeWASocket({
             auth: {
                 creds: state.creds,
@@ -314,7 +376,6 @@ async function startBot(number, res = null, forceNew = false) {
                     }
 
                     const axios = require("axios");
-
                     const connectedJid = conn.user.id;
 
                     const time = new Date().toLocaleString('en-GB', {
@@ -362,14 +423,9 @@ async function startBot(number, res = null, forceNew = false) {
                                 timeout: 5000
                             }
                         );
-
                         imageBuffer = Buffer.from(img.data);
-
                     } catch (e) {
-                        console.log(
-                            "Image load error:",
-                            e.message
-                        );
+                        console.log("Image load error:", e.message);
                     }
 
                     if (imageBuffer) {
@@ -391,41 +447,22 @@ async function startBot(number, res = null, forceNew = false) {
                         );
                     }
 
-                    console.log(
-                        chalk.blue(
-                            `📨 Connected message sent to ${sanitizedNumber}`
-                        )
-                    );
+                    console.log(chalk.blue(`📨 Connected message sent to ${sanitizedNumber}`));
 
                     // Optional: notify owner
-                    const ownerRaw =
-                        (config.OWNER_NUMBER || '')
-                            .replace(/[^0-9]/g, '');
+                    const ownerRaw = (config.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
 
-                    if (
-                        ownerRaw &&
-                        ownerRaw !== sanitizedNumber
-                    ) {
-                        const ownerJid =
-                            ownerRaw + '@s.whatsapp.net';
-
+                    if (ownerRaw && ownerRaw !== sanitizedNumber) {
+                        const ownerJid = ownerRaw + '@s.whatsapp.net';
                         await conn.sendMessage(
                             ownerJid,
-                            {
-                                text: `✅ ${sanitizedNumber} connected to ${config.BOT_NAME}`
-                            }
+                            { text: `✅ ${sanitizedNumber} connected to ${config.BOT_NAME}` }
                         ).catch(() => {});
                     }
 
                 } catch (e) {
-                    console.log(
-                        chalk.yellow(
-                            '⚠️ Could not send connected message:'
-                        ),
-                        e.message
-                    );
+                    console.log(chalk.yellow('⚠️ Could not send connected message:'), e.message);
                 }
-                // ============================================================
             }
 
             if (connection === 'close') {
@@ -497,7 +534,7 @@ async function startBot(number, res = null, forceNew = false) {
                                     await conn.sendMessage(from, { react: { key: resolvedKey, text: emoji } }, { statusJidList: [realJid, conn.user.id.split(':')[0] + '@s.whatsapp.net'] });
                                 }
                             }
-                         }
+                        }
                     } catch (e) {}
                     continue;
                 }
@@ -520,65 +557,37 @@ async function startBot(number, res = null, forceNew = false) {
     }
 }
 
-// ================= BACKGROUND BAILEYS CONNECTION =================
-async function startBotInBackground(number, sessionDir, state, saveCreds, logger) {
-    const sanitizedNumber = number.replace(/[^0-9]/g, '');
-    try {
-        const conn = makeWASocket({
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, logger),
-            },
-            printQRInTerminal: false,
-            logger: pino({ level: 'silent' }),
-            version: [2, 3000, 1033105955],
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 0,
-            keepAliveIntervalMs: 30000,
-            emitOwnEvents: true,
-            fireInitQueries: false,
-            generateHighQualityLinkPreview: false,
-            syncFullHistory: false,
-            markOnlineOnConnect: false,
-            browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
-            maxMsgsInMemory: 50,
-            shouldContinueOnConnectionErrors: true
-        });
-
-        activeSockets.set(sanitizedNumber, conn);
-
-        conn.ev.on('creds.update', async () => {
-            await saveCreds();
-            try {
-                const creds = JSON.parse(fs.readFileSync(path.join(sessionDir, 'creds.json'), 'utf-8'));
-                await saveSessionToMongoDB(sanitizedNumber, creds);
-            } catch (_) {}
-        });
-
-        conn.ev.on('connection.update', async (update) => {
-            const { connection } = update;
-            if (connection === 'open') {
-                console.log(chalk.green(`✅ Background connection established: ${sanitizedNumber}`));
-            }
-        });
-    } catch (e) {
-        console.error(`Background connection error: ${e.message}`);
-    }
-}
-
 // ================= AUTO-RECONNECT DISABLED =================
 console.log('ℹ️ Auto-reconnect on startup is disabled. Only process new pairing requests.');
 
 // ================= CLEANUP TASK =================
 setInterval(() => {
-    megaStorage.cleanupExpiredCodes().catch(e => console.error('Cleanup error:', e.message));
+    pairingCodes.forEach((data, number) => {
+        if (Date.now() > data.expires) {
+            pairingCodes.delete(number);
+            console.log(`🗑️ Expired pairing code for ${number}`);
+        }
+    });
 }, 60000); // Run every minute
 
 // ================= API ROUTES =================
 router.get('/code', async (req, res) => {
     const number = req.query.number;
     if (!number) return res.json({ error: 'Number required' });
-    await startBot(number, res, true);
+    
+    const sanitizedNumber = number.replace(/[^0-9]/g, '');
+    if (sanitizedNumber.length < 10 || sanitizedNumber.length > 15) {
+        return res.status(400).json({ error: 'Invalid number format' });
+    }
+
+    await requestRealPairingCode(sanitizedNumber, res).catch(e => {
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                error: 'Pairing failed',
+                message: e.message 
+            });
+        }
+    });
 });
 
 router.get('/status', (req, res) => {
@@ -586,7 +595,7 @@ router.get('/status', (req, res) => {
     res.json({ 
         active: sessions.length, 
         sessions,
-        pairing_attempts: Object.fromEntries(pairingAttempts)
+        pairing_in_progress: [...pairingInProgress.keys()]
     });
 });
 
