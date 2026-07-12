@@ -37,11 +37,9 @@ const router = express.Router();
 connectdb();
 
 const activeSockets = new Map();
-const reactedNewsletters = new Set();
 
 // safety maps
 const restartCounts = new Map();                     // tracks restart attempts per number
-const newsletterReactTimestamps = new Map();         // per-message cooldown to avoid rapid reactions
 
 // ================= LOAD PLUGINS =================
 const pluginsDir = path.join(__dirname, 'plugins');
@@ -49,12 +47,12 @@ if (fs.existsSync(pluginsDir)) {
     fs.readdirSync(pluginsDir)
  .filter(f => f.endsWith('.js'))
  .forEach(f => {
-        try {
-            require(path.join(pluginsDir, f));
-        } catch (e) {
-            console.error(`⚠️ Failed to load plugin ${f}:`, e.message);
-        }
-    });
+         try {
+             require(path.join(pluginsDir, f));
+         } catch (e) {
+             console.error(`⚠️ Failed to load plugin ${f}:`, e.message);
+         }
+     });
 }
 
 // ================= GROUP EVENTS =================
@@ -108,11 +106,12 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
         const autoRecord = (userConfig.AUTO_RECORDING || config.AUTO_RECORDING || 'false') === 'true';
         const autoTyping = (userConfig.AUTO_TYPING || config.AUTO_TYPING || 'false') === 'true';
 
-        if (autoRecord &&!fromMe) {
-            await conn.sendPresenceUpdate('recording', from).catch(() => {});
-        } else if (autoTyping &&!fromMe) {
-            await conn.sendPresenceUpdate('composing', from).catch(() => {});
-        }
+        // ⚠️ DISABLED: Auto typing/recording can trigger detection
+        // if (autoRecord &&!fromMe) {
+        //     await conn.sendPresenceUpdate('recording', from).catch(() => {});
+        // } else if (autoTyping &&!fromMe) {
+        //     await conn.sendPresenceUpdate('composing', from).catch(() => {});
+        // }
 
         const workType = (userConfig.WORK_TYPE || config.WORK_TYPE || 'public').toLowerCase();
         if (workType === 'private' &&!isOwner &&!sudoAccess) return;
@@ -141,13 +140,14 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
         await incrementStats(botNumber, 'commandsUsed').catch(() => {});
 
         const reply = async (text) => {
-            if (autoRecord &&!fromMe) {
-                await conn.sendPresenceUpdate('recording', from).catch(() => {});
-                await delay(1000);
-            } else if (autoTyping &&!fromMe) {
-                await conn.sendPresenceUpdate('composing', from).catch(() => {});
-                await delay(1000);
-            }
+            // ⚠️ DISABLED: Auto typing/recording can trigger detection
+            // if (autoRecord &&!fromMe) {
+            //     await conn.sendPresenceUpdate('recording', from).catch(() => {});
+            //     await delay(1000);
+            // } else if (autoTyping &&!fromMe) {
+            //     await conn.sendPresenceUpdate('composing', from).catch(() => {});
+            //     await delay(1000);
+            // }
 
             const sent = await conn.sendMessage(from, { text: String(text) }, { quoted: mek });
 
@@ -265,33 +265,33 @@ async function startBot(number, res = null, forceNew = false) {
                 await addNumberToMongoDB(sanitizedNumber);
 
                 // ================= STYLED CONNECTED MESSAGE =================
-try {
-    await delay(3000);
+                try {
+                    await delay(3000);
 
-    if (!conn.user?.id) {
-        console.log(chalk.red('❌ conn.user not ready yet'));
-        return;
-    }
+                    if (!conn.user?.id) {
+                        console.log(chalk.red('❌ conn.user not ready yet'));
+                        return;
+                    }
 
-    const axios = require("axios");
+                    const axios = require("axios");
 
-    const connectedJid = conn.user.id;
+                    const connectedJid = conn.user.id;
 
-    const time = new Date().toLocaleString('en-GB', {
-        timeZone: 'Africa/Nairobi'
-    });
+                    const time = new Date().toLocaleString('en-GB', {
+                        timeZone: 'Africa/Nairobi'
+                    });
 
-    const userConfig = await getUserConfigFromMongoDB(
-        sanitizedNumber
-    ).catch(() => ({}));
+                    const userConfig = await getUserConfigFromMongoDB(
+                        sanitizedNumber
+                    ).catch(() => ({}));
 
-    const workType = (
-        userConfig.WORK_TYPE ||
-        config.WORK_TYPE ||
-        'public'
-    ).toUpperCase();
+                    const workType = (
+                        userConfig.WORK_TYPE ||
+                        config.WORK_TYPE ||
+                        'public'
+                    ).toUpperCase();
 
-    const connectedMsg = `
+                    const connectedMsg = `
  ╔════════╗
  ║ 🤖 ${config.BOT_NAME} ONLINE ║
  ╚════════╝
@@ -312,110 +312,79 @@ try {
  > ${config.BOT_NAME} is now active and ready
  `.trim();
 
-    let imageBuffer = null;
+                    let imageBuffer = null;
 
-    try {
-        const img = await axios.get(
-            "https://files.catbox.moe/99ofzd.jpg",
-            {
-                responseType: "arraybuffer"
-            }
-        );
+                    try {
+                        const img = await axios.get(
+                            "https://files.catbox.moe/99ofzd.jpg",
+                            {
+                                responseType: "arraybuffer"
+                            }
+                        );
 
-        imageBuffer = Buffer.from(img.data);
+                        imageBuffer = Buffer.from(img.data);
 
-    } catch (e) {
-        console.log(
-            "Image load error:",
-            e.message
-        );
-    }
-
-    if (imageBuffer) {
-        await conn.sendMessage(
-            connectedJid,
-            {
-                image: imageBuffer,
-                caption: connectedMsg,
-                mentions: [connectedJid]
-            }
-        );
-    } else {
-        await conn.sendMessage(
-            connectedJid,
-            {
-                text: connectedMsg,
-                mentions: [connectedJid]
-            }
-        );
-    }
-
-    console.log(
-        chalk.blue(
-            `📨 Connected message sent to ${sanitizedNumber}`
-        )
-    );
-
-    // Optional: notify owner
-    const ownerRaw =
-        (config.OWNER_NUMBER || '')
-            .replace(/[^0-9]/g, '');
-
-    if (
-        ownerRaw &&
-        ownerRaw !== sanitizedNumber
-    ) {
-        const ownerJid =
-            ownerRaw + '@s.whatsapp.net';
-
-        await conn.sendMessage(
-            ownerJid,
-            {
-                text: `✅ ${sanitizedNumber} connected to ${config.BOT_NAME}`
-            }
-        ).catch(() => {});
-    }
-
-} catch (e) {
-    console.log(
-        chalk.yellow(
-            '⚠️ Could not send connected message:'
-        ),
-        e.message
-    );
-}
-// ============================================================
-
-                // ================= AUTO FOLLOW NEWSLETTER =================
-                try {
-                    const newsletterId = config.NEWSLETTER_JID;
-                    const autoFollowEnabled = (config.ENABLE_AUTO_FOLLOW_NEWSLETTER || 'false') === 'true';
-                    if (autoFollowEnabled && newsletterId && newsletterId.includes('@newsletter')) {
-                        const meta = await conn.newsletterMetadata('jid', newsletterId).catch(() => null);
-                        if (!meta ||!meta.viewer_metadata) {
-                            await conn.newsletterFollow(newsletterId).catch(e => {
-                                console.log('Newsletter follow failed:', e?.message || e);
-                            });
-                            console.log(`✅ ${config.BOT_NAME} Auto-followed newsletter: ${newsletterId}`);
-                        } else {
-                            console.log(`✅ ${config.BOT_NAME} Already following: ${meta.name || newsletterId}`);
-                        }
-                    } else if (!autoFollowEnabled && newsletterId) {
-                        console.log('Auto-follow newsletter is disabled by config. To enable set ENABLE_AUTO_FOLLOW_NEWSLETTER=true and NEWSLETTER_JID in .env');
+                    } catch (e) {
+                        console.log(
+                            "Image load error:",
+                            e.message
+                        );
                     }
 
-                    const groupInvite = config.AUTO_JOIN_GROUP || '';
-                    if (groupInvite && groupInvite.includes('chat.whatsapp.com')) {
-                        const inviteCode = groupInvite.split('chat.whatsapp.com/')[1].split('?')[0];
-                        await conn.groupAcceptInvite(inviteCode).catch(e => {
-                            console.log('Group join error:', e.message);
-                        });
-                        console.log(`✅ ${config.BOT_NAME} Attempted to join group`);
+                    if (imageBuffer) {
+                        await conn.sendMessage(
+                            connectedJid,
+                            {
+                                image: imageBuffer,
+                                caption: connectedMsg,
+                                mentions: [connectedJid]
+                            }
+                        );
+                    } else {
+                        await conn.sendMessage(
+                            connectedJid,
+                            {
+                                text: connectedMsg,
+                                mentions: [connectedJid]
+                            }
+                        );
                     }
+
+                    console.log(
+                        chalk.blue(
+                            `📨 Connected message sent to ${sanitizedNumber}`
+                        )
+                    );
+
+                    // Optional: notify owner
+                    const ownerRaw =
+                        (config.OWNER_NUMBER || '')
+                            .replace(/[^0-9]/g, '');
+
+                    if (
+                        ownerRaw &&
+                        ownerRaw !== sanitizedNumber
+                    ) {
+                        const ownerJid =
+                            ownerRaw + '@s.whatsapp.net';
+
+                        await conn.sendMessage(
+                            ownerJid,
+                            {
+                                text: `✅ ${sanitizedNumber} connected to ${config.BOT_NAME}`
+                            }
+                        ).catch(() => {});
+                    }
+
                 } catch (e) {
-                    console.log('❌ Auto join error:', e.message);
+                    console.log(
+                        chalk.yellow(
+                            '⚠️ Could not send connected message:'
+                        ),
+                        e.message
+                    );
                 }
-                // =======================================================================
+                // ============================================================
             }
 
             if (connection === 'close') {
@@ -460,54 +429,9 @@ try {
             for (const mek of messages) {
                 const from = mek.key.remoteJid;
 
-                // ================= NEWSLETTER REACT WITH LOGGING =================
-                if (from === config.NEWSLETTER_JID) {
-                    const channelReact = (userConfig.CHANNEL_REACT || config.CHANNEL_REACT || 'true') === 'true';
-                    if (channelReact) {
-                        try {
-                            const serverId = mek.message?.newsletterServerId || mek.key.id;
-                            // per-serverId cooldown to avoid repeated reacts in quick succession (e.g., 2s)
-                            const lastReact = newsletterReactTimestamps.get(serverId) || 0;
-                            if (Date.now() - lastReact < 2000) {
-                                // skip to reduce activity
-                                continue;
-                            }
-                            newsletterReactTimestamps.set(serverId, Date.now());
-
-                            const uniqueKey = `${from}_${serverId}`;
-                            if (reactedNewsletters.has(uniqueKey)) continue;
-                            reactedNewsletters.add(uniqueKey);
-                            setTimeout(() => reactedNewsletters.delete(uniqueKey), 600000);
-
-                            const channelEmojis = (userConfig.CHANNEL_REACT_EMOJIS || config.CHANNEL_REACT_EMOJIS || '❤️,👍,🔥,💯,🙏,😂,😮,😢,🎉').split(',');
-                            const emoji = channelEmojis[Math.floor(Math.random() * channelEmojis.length)].trim();
-
-                            const res = await conn.newsletterReactMessage(from, serverId, emoji);
-
-                            if (res) {
-                                console.log(chalk.green(`✅ Reacted to newsletter ${from} with ${emoji} | serverId: ${serverId}`));
-                            } else {
-                                console.log(chalk.yellow(`⚠️ Newsletter react returned empty response for ${serverId}`));
-                            }
-
-                            // Forward a short summary to Telegram admin channel
-                            try {
-                                if (tgBot && tgBot.telegram) {
-                                    const text = `📣 Newsletter update from ${from}\nserverId: ${serverId}\nemoji: ${emoji}`;
-                                    await tgBot.telegram.sendMessage(config.TELEGRAM_CHAT_ID, text).catch(() => {});
-                                }
-                            } catch (e) {
-                                console.log('Failed to forward newsletter to Telegram:', e.message || e);
-                            }
-
-                        } catch (e) {
-                            console.log(chalk.red(`❌ Newsletter react failed:`), e.message);
-                            console.log(chalk.gray(` JID: ${from} | serverId: ${mek.message?.newsletterServerId || mek.key.id}`));
-                        }
-                    }
-                    continue;
-                }
-                // ===================================================================
+                // ⚠️ NEWSLETTER AUTO-REACT REMOVED FOR BAN SAFETY
+                // Newsletter reactions are too risky and trigger detection
+                // If needed, configure separately in config.js only
 
                 if (from === 'status@broadcast') {
                     try {
