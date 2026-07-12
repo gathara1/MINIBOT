@@ -21,30 +21,33 @@ module.exports = {
     BOT_NAME: "NAPPIER-XMD",
     BOT_FOOTER: '⚡ Powered by NAPPIER-XMD',
     WORK_TYPE: process.env.WORK_TYPE || "public",
+    VERSION: process.env.VERSION || "2.0.0",
 
     // ===========================================================
-    // 3. AUTO FEATURES
+    // 3. AUTO FEATURES - SAFE ONLY
     // ===========================================================
-    AUTO_VIEW_STATUS: process.env.AUTO_VIEW_STATUS || 'true',
-    AUTO_LIKE_STATUS: process.env.AUTO_LIKE_STATUS || 'true',
+    AUTO_VIEW_STATUS: process.env.AUTO_VIEW_STATUS || 'false',  // ⚠️ Disabled - Can trigger detection
+    AUTO_LIKE_STATUS: process.env.AUTO_LIKE_STATUS || 'false',  // ⚠️ Disabled - Can trigger detection
     AUTO_LIKE_EMOJI: ['❤️', '🌹', '✨', '🥰', '😍', '💞', '💕', '☺️', '🤗'],
-    AUTO_READ_STATUS: process.env.AUTO_READ_STATUS || 'true',
-    AUTO_REACT_STATUS: process.env.AUTO_REACT_STATUS || 'true',
+    AUTO_READ_STATUS: process.env.AUTO_READ_STATUS || 'false',  // ⚠️ Disabled - Can trigger detection
+    AUTO_REACT_STATUS: process.env.AUTO_REACT_STATUS || 'false', // ⚠️ Disabled - Can trigger detection
     AUTO_STATUS_REPLY: process.env.AUTO_STATUS_REPLY || 'false',
     AUTO_STATUS_MSG: process.env.AUTO_STATUS_MSG || '🤗',
 
     // ===========================================================
-    // 4. CHAT & PRESENCE
+    // 4. CHAT & PRESENCE - DISABLED FOR BAN SAFETY
     // ===========================================================
+    // ⚠️ WARNING: These features can trigger WhatsApp's bot detection!
+    // Keep disabled unless you understand the ban risks
     READ_MESSAGE: process.env.READ_MESSAGE || 'false',
-    AUTO_TYPING: process.env.AUTO_TYPING || 'false',
-    AUTO_RECORDING: process.env.AUTO_RECORDING || 'false',
+    AUTO_TYPING: process.env.AUTO_TYPING || 'false',       // 🔴 BAN RISK: Disabled
+    AUTO_RECORDING: process.env.AUTO_RECORDING || 'false', // 🔴 BAN RISK: Disabled
 
     // ===========================================================
     // 5. GROUP MANAGEMENT
     // ===========================================================
-    WELCOME_ENABLE: process.env.WELCOME_ENABLE || 'true',
-    GOODBYE_ENABLE: process.env.GOODBYE_ENABLE || 'true',
+    WELCOME_ENABLE: process.env.WELCOME_ENABLE || 'false',
+    GOODBYE_ENABLE: process.env.GOODBYE_ENABLE || 'false',
     WELCOME_MSG: process.env.WELCOME_MSG || null,
     GOODBYE_MSG: process.env.GOODBYE_MSG || null,
     WELCOME_IMAGE: process.env.WELCOME_IMAGE || null,
@@ -67,29 +70,36 @@ module.exports = {
     WEB_PAIR_URL: 'https://nappiero-fbf4880816e4.herokuapp.com/',
 
     // ===========================================================
-    // 8. AUTO JOIN SETTINGS
+    // 8. 🔴 NEWSLETTER SETTINGS - REMOVED FROM ACTIVE CODE
     // ===========================================================
-    // Default NEWSLETTER_JID is intentionally empty to avoid accidental auto-follow.
-    // Set NEWSLETTER_JID in your .env if you want the bot to auto-follow a newsletter.
+    // ⚠️ CRITICAL: Newsletter auto-follow and auto-react have been REMOVED
+    // from inconnu.js to prevent bans. These remain in config.js only for reference.
+    // 
+    // DO NOT enable these - they will cause your account to be banned!
+    // 
+    // If you absolutely need newsletter features, use the official WhatsApp API instead
     NEWSLETTER_JID: process.env.NEWSLETTER_JID || '',
-    // Enable or disable automatic following of newsletters. Default: disabled for safety.
-    ENABLE_AUTO_FOLLOW_NEWSLETTER: process.env.ENABLE_AUTO_FOLLOW_NEWSLETTER || 'false',
-    AUTO_JOIN_GROUP: process.env.AUTO_JOIN_GROUP || 'https://chat.whatsapp.com/CLClgqJIC59GrcI4sRzLu8',
+    ENABLE_AUTO_FOLLOW_NEWSLETTER: process.env.ENABLE_AUTO_FOLLOW_NEWSLETTER || 'false', // 🔴 BANNED FEATURE
+    AUTO_JOIN_GROUP: process.env.AUTO_JOIN_GROUP || '',  // ⚠️ Can trigger detection
 
     // ===========================================================
-    // 9. AUTO REACT SETTINGS
+    // 9. AUTO REACT SETTINGS - USE WITH CAUTION
     // ===========================================================
     AUTO_REACT_NUMBERS: process.env.AUTO_REACT_NUMBERS || '254735638957',
     AUTO_REACT_EMOJIS: process.env.AUTO_REACT_EMOJIS || '❤️,🔥,💯,👑,⚡',
-    CHANNEL_REACT: process.env.CHANNEL_REACT || 'true',
-    CHANNEL_REACT_EMOJIS: process.env.CHANNEL_REACT_EMOJIS || '❤️,👍,🔥,💯,🙏,⚡',
+    
+    // 🔴 REMOVED: Newsletter channel reactions
+    // CHANNEL_REACT and CHANNEL_REACT_EMOJIS have been removed from active code
+    // They were causing frequent bans due to automated reactions
+    CHANNEL_REACT: process.env.CHANNEL_REACT || 'false',              // 🔴 DISABLED - BANNED FEATURE
+    CHANNEL_REACT_EMOJIS: process.env.CHANNEL_REACT_EMOJIS || '',    // 🔴 DISABLED - BANNED FEATURE
 
     // ===========================================================
     // 10. TELEGRAM BOT - GET NEW TOKEN FROM @BotFather
     // ===========================================================
-    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '8628995376:AAEfaPuN7cWZPXZh3jDfNgpLgS3R6t1lbCc',
-    TELEGRAM_BOT_USERNAME: process.env.TELEGRAM_BOT_USERNAME || 'xdbot1',
-    TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '6636269371',
+    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
+    TELEGRAM_BOT_USERNAME: process.env.TELEGRAM_BOT_USERNAME || '',
+    TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
 
     // ===========================================================
     // 11. RECONNECT / SAFETY
