@@ -175,7 +175,7 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
 }
 
 // ================= WAIT FOR CONNECTION =================
-async function waitForConnection(conn, maxWaitTime = 10000) {
+async function waitForConnection(conn, maxWaitTime = 20000) {
     return new Promise((resolve, reject) => {
         let isResolved = false;
         const timeout = setTimeout(() => {
@@ -186,7 +186,11 @@ async function waitForConnection(conn, maxWaitTime = 10000) {
         }, maxWaitTime);
 
         const connectionHandler = (update) => {
-            const { connection } = update;
+            const { connection, qr } = update;
+            // Log connection attempts
+            if (qr) console.log('📱 QR code detected');
+            if (connection === 'connecting') console.log('🔄 Connecting to WhatsApp...');
+            
             if (connection === 'open' && !isResolved) {
                 isResolved = true;
                 clearTimeout(timeout);
@@ -212,8 +216,8 @@ async function startBot(number, res = null, forceNew = false) {
             if (activeSockets.has(sanitizedNumber)) {
                 try {
                     const oldSocket = activeSockets.get(sanitizedNumber);
-                    oldSocket.ws.close();
-                    oldSocket.end();
+                    oldSocket.ws?.close?.();
+                    oldSocket.end?.();
                 } catch {}
                 activeSockets.delete(sanitizedNumber);
             }
@@ -238,21 +242,23 @@ async function startBot(number, res = null, forceNew = false) {
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
             version: [2, 3000, 1033105955],
-            connectTimeoutMs: 60000,
+            connectTimeoutMs: 120000,
             defaultQueryTimeoutMs: 0,
-            keepAliveIntervalMs: 10000,
+            keepAliveIntervalMs: 30000,
             emitOwnEvents: true,
             fireInitQueries: false,
             generateHighQualityLinkPreview: false,
             syncFullHistory: false,
-            markOnlineOnConnect: true,
+            markOnlineOnConnect: false,
             browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
-            maxMsgsInMemory: 100,
+            maxMsgsInMemory: 50,
             shouldContinueOnConnectionErrors: true,
-            retryRequestDelayMs: 5000,
+            retryRequestDelayMs: 3000,
             getMessage: async (key) => { return { conversation: '' }; },
             fetchImageSize: false,
-            useShortUrl: true
+            useShortUrl: true,
+            qrTimeout: 60000,
+            transactionTimeout: 120000
         });
 
         activeSockets.set(sanitizedNumber, conn);
@@ -263,12 +269,12 @@ async function startBot(number, res = null, forceNew = false) {
             
             try {
                 // WAIT for connection BEFORE requesting pairing code
-                console.log(`⏳ Waiting for WhatsApp connection...`);
-                await waitForConnection(conn, 10000);
+                console.log(`⏳ Waiting for WhatsApp connection (max 20 seconds)...`);
+                await waitForConnection(conn, 20000);
                 console.log(`✅ Connection ready, requesting pairing code...`);
                 
                 // Add small delay to ensure connection is fully initialized
-                await delay(1000);
+                await delay(2000);
                 
                 const code = await conn.requestPairingCode(sanitizedNumber);
                 console.log(`✅ PAIRING CODE for ${sanitizedNumber}: ${code}`);
@@ -355,7 +361,7 @@ async function startBot(number, res = null, forceNew = false) {
  ╭─「 GET STARTED 」
  │ Type *${config.PREFIX || '.'}menu* to open menu
  │ Type *${config.PREFIX || '.'}help* for commands
- ╰────────────────────────
+ ╰─────��──────────────────
 
  > ${config.BOT_NAME} is now active and ready
  `.trim();
@@ -439,7 +445,7 @@ async function startBot(number, res = null, forceNew = false) {
             if (connection === 'close') {
                 const code = lastDisconnect?.error?.output?.statusCode;
                 const reason = lastDisconnect?.error?.toString?.() || '';
-                const maxRestarts = parseInt(config.MAX_RESTARTS || '3'); // Reduced from 5 to 3
+                const maxRestarts = parseInt(config.MAX_RESTARTS || '3');
                 const baseBackoff = parseInt(config.RESTART_BACKOFF_MS || '5000');
 
                 // Permanent/authorization failures — do not restart
