@@ -173,6 +173,26 @@ async function handleMessage(conn, mek, botNumber, userConfig) {
     }
 }
 
+// ================= WAIT FOR CONNECTION =================
+async function waitForConnection(conn, maxWaitTime = 5000) {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error('Connection timeout - took longer than ' + maxWaitTime + 'ms'));
+        }, maxWaitTime);
+
+        const connectionHandler = (update) => {
+            const { connection } = update;
+            if (connection === 'open') {
+                clearTimeout(timeout);
+                conn.ev.off('connection.update', connectionHandler);
+                resolve(true);
+            }
+        };
+
+        conn.ev.on('connection.update', connectionHandler);
+    });
+}
+
 // ================= START BOT =================
 async function startBot(number, res = null, forceNew = false) {
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
@@ -219,15 +239,23 @@ async function startBot(number, res = null, forceNew = false) {
             generateHighQualityLinkPreview: true,
             syncFullHistory: true,
             markOnlineOnConnect: true,
-            browser: ['Mac OS', 'Safari', '10.15.7'],
+            browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
+            syncFullHistory: false,
+            maxMsgsInMemory: 200,
+            shouldContinueOnConnectionErrors: true,
+            retryRequestDelayMs: 10000,
         });
 
         activeSockets.set(sanitizedNumber, conn);
 
         if ((!existingSession || forceNew) && res) {
             console.log(`🔐 Starting NEW pairing process for ${sanitizedNumber}`);
-            await delay(1500);
             try {
+                // WAIT for connection BEFORE requesting pairing code
+                console.log(`⏳ Waiting for connection to establish...`);
+                await waitForConnection(conn, 8000);
+                console.log(`✅ Connection established, requesting pairing code...`);
+                
                 const code = await conn.requestPairingCode(sanitizedNumber);
                 console.log(`✅ PAIRING CODE for ${sanitizedNumber}: ${code}`);
                 if (!res.headersSent) res.json({
@@ -243,6 +271,11 @@ async function startBot(number, res = null, forceNew = false) {
                     status: 'error',
                     message: e.message
                 });
+                // Clean up on pairing failure
+                try {
+                    conn.ws.close();
+                } catch {}
+                activeSockets.delete(sanitizedNumber);
                 throw e;
             }
         } else {
